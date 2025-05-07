@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# Server script: tinyfecvpn_server.sh
 
 RED='\033[0;31m'
 ORANGE='\033[0;33m'
@@ -49,19 +48,21 @@ function installDependencies() {
 
 function downloadAndExtractTinyFecVPN() {
     echo -e "${GREEN}Downloading TinyFecVPN precompiled binaries...${NC}"
-    wget https://github.com/wangyu-/tinyfecVPN/releases/download/20230206.0/tinyvpn_binaries.tar.gz -O /opt/tinyvpn_binaries.tar.gz
+    wget https://github.com/Brazzo978/tinyfec-wizard-vpn/raw/refs/heads/main/tinyvpn_binaries.tar.gz \
+         -O /opt/tinyvpn_binaries.tar.gz
     echo -e "${GREEN}Extracting TinyFecVPN binaries...${NC}"
     tar -xzf /opt/tinyvpn_binaries.tar.gz -C /opt/
-    chmod +x /opt/tinyfecVPN/tinyvpn_amd64
+    mv /opt/tinyfecVPN/tinyvpn_amd64 /opt/tinyvpn_amd64
+    chmod +x /opt/tinyvpn_amd64
 }
 
 function configureServerRouting() {
     echo -e "${GREEN}Configuring server-side routing and iptables...${NC}"
-    iptables -t nat -A POSTROUTING -s ${SUBNET}/24 -o eth0 -j MASQUERADE
+    IFACE=$(ip route get 1.1.1.1 | awk '{print $5;exit}')
+    iptables -t nat -A POSTROUTING -s ${SUBNET}/24 -o "$IFACE" -j MASQUERADE
     echo 1 > /proc/sys/net/ipv4/ip_forward
-    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    fi
+    grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || \
+      echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
     sysctl -p
 }
 
@@ -73,8 +74,10 @@ Description=TinyFecVPN Service
 After=network.target
 
 [Service]
-ExecStart=/opt/tinyvpn_amd64 -s -l0.0.0.0:${PORT} -f${FEC} -k "${PASSWORD}" --sub-net ${SUBNET}
+Environment="PORT=${PORT}" "FEC=${FEC}" "PASSWORD=${PASSWORD}" "SUBNET=${SUBNET}"
+ExecStart=/bin/sh -c '/opt/tinyvpn_amd64 -s -l0.0.0.0:$PORT -f$FEC -k "$PASSWORD" --sub-net $SUBNET'
 Restart=always
+RestartSec=5
 User=root
 
 [Install]
