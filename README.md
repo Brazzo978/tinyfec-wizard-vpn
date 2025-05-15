@@ -19,3 +19,6 @@ Once completed if you rerun the script you will be presented with a menù with t
 ## Client installation
 
 Precompiled packages are available for openwrt , just download install them via the luci page and a new voice for vpn should appear , compile with the data the server script gave you and everything should work once enabled.
+
+
+This project uses tinyfecvpn , all rights to the owner of the project , if you want to learn moreo go [here](https://github.com/wangyu-/tinyfecVPN).
