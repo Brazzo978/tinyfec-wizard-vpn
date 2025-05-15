@@ -1,0 +1,100 @@
+#!/bin/sh /etc/rc.common
+# TinyFecVPN client service for OpenWrt
+
+START=99
+STOP=10
+
+start() {
+  # Abilita il servizio al boot non appena viene avviato
+  [ -x /etc/init.d/tinyvpnconf ] && /etc/init.d/tinyvpnconf enable
+
+  [ "$(uci get tinyvpnconf.Setup.enabled 2>/dev/null)" = "1" ] || return 0
+
+  # 1) Parametri da UCI
+  server_ip="$(uci get tinyvpnconf.Setup.dstAddr)"
+  port="$(uci get tinyvpnconf.Setup.dstPort)"
+  key="$(uci get tinyvpnconf.Setup.pass)"
+  fec="$(uci get tinyvpnconf.Setup.fecParam)"
+  subnet="$(uci get tinyvpnconf.Setup.subnet)"    # es. 10.22.22.0
+  client_ip="${subnet%.*}.2"
+
+  # 2) Crea/aggiorna interfaccia point-to-point in UCI
+  uci batch <<EOF
+set network.tinyfec=interface
+set network.tinyfec.proto='static'
+set network.tinyfec.device='tinyfec0'
+set network.tinyfec.ipaddr='${client_ip}'
+set network.tinyfec.peeraddr='${subnet%.*}.1'
+set network.tinyfec.netmask='255.255.255.255'
+commit network
+EOF
+  /etc/init.d/network reload tinyfec
+
+  # 3) Avvia il client in background
+  /usr/bin/tinyfec -c \
+    -r "${server_ip}:${port}" \
+    -k "$key" \
+    -f "$fec" \
+    --keep-reconnect \
+    --sub-net "$subnet" \
+    --tun-dev tinyfec0 &
+  pid=$!
+
+  # 4) Aspetta che tinyfec0 venga creato (max 10s)
+  for i in $(seq 1 10); do
+    sleep 1
+    [ -d /sys/class/net/tinyfec0 ] && break
+  done
+
+  # 5) Porta su l’interfaccia in LuCI
+  ifup tinyfec
+
+  # 6) Metti tinyfec in zona LAN del firewall
+  uci batch <<EOF
+add_list firewall.@zone[1].network='tinyfec'
+commit firewall
+EOF
+  /etc/init.d/firewall reload
+
+  # 7) Rotta statica verso il server via WAN
+  wan_gw=$(ip route | awk '/default via/ { print $3; exit }')
+  ip route replace ${server_ip}/32 via $wan_gw dev eth1
+
+  # 8) Imposta default route via tunnel
+  ip route replace default dev tinyfec0
+
+  echo $pid > /var/run/tinyvpnconf.pid
+  logger -t tinyvpnconf "Started pid=$pid tunnel tinyfec0 -> ${server_ip}:${port}"
+}
+
+stop() {
+  # Termina tutte le istanze di tinyfec e rimuovi il PID file
+  killall tinyfec 2>/dev/null
+  rm -f /var/run/tinyvpnconf.pid
+
+  # Ripristina default route via WAN
+  #wan_gw="$(uci get network.wan.gateway 2>/dev/null)"
+  #[ -n "$wan_gw" ] && ip route replace default via "$wan_gw" dev eth1
+
+  # Porta giù il tunnel
+  ifconfig tinyfec0 down 2>/dev/null
+
+  # Rimuovi la configurazione UCI di tinyfec
+  uci delete network.tinyfec
+  uci commit network
+  ifdown tinyfec
+
+  # Rimuovi dalla zona LAN del firewall
+  uci del_list firewall.@zone[1].network='tinyfec'
+  uci commit firewall
+  /etc/init.d/firewall reload
+
+  logger -t tinyvpnconf "Stopped"
+}
+
+status() {
+  [ -f /var/run/tinyvpnconf.pid ] && kill -0 "$(cat /var/run/tinyvpnconf.pid)" 2>/dev/null \
+    && echo "running (pid $(cat /var/run/tinyvpnconf.pid))" || echo "stopped"
+}
+
+
